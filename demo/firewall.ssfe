@@ -1,0 +1,88 @@
+# Sets the initial value of register r0.
+set_default_action accept
+# Dimension some resources.
+set_max_objects 30
+set_max_miniaddrs 30
+
+
+# proto_demux mappings are used to parse packets and jump to different
+# labels based on the protocol(s) present.
+mapping_alloc pdm_in          proto_demux 1     1 -
+mapping_alloc pdm_out         proto_demux 1     1 -
+
+# Hash mappings map a key to a label and (optionally) a value.
+mapping_alloc bad_IPs         hash        10000 4 -
+mapping_alloc open_tcp_ports  hash        100   2 -
+mapping_alloc bad_URIs        hash        1000  4 -
+
+
+start_code
+
+  accept:
+    load ACCEPT r0
+    stop
+  reject:
+    load REJECT r0
+    stop
+  syn_proxy:
+    load 2 r0
+    stop
+
+  start_inbound:
+    lookup pdm_in p1          # parse packet and jump to label.  Initially
+                              # pl2 points to whole layer-2 packet.  After
+                              # this pl3, pl4 and pl5 are initialised to
+                              # IP datagram, layer-4 datagram and payload
+                              # as appropriate
+    stop
+
+  start_outbound:
+    lookup pdm_out p1
+    stop
+
+  ip_inbound:
+    append_ip4_src pkey       # append source IP addr to pkey register
+    lookup bad_IPs p1         # lookup in hash table, jump to label if matched
+                              #   else continue to next instruction
+    jmp accept                # no match: accept packet
+
+  tcp_inbound:
+    append_ip4_src pkey       # as above: check for bad source IP addr
+    lookup bad_IPs p1
+    init_key_p pkey           # reset pkey register to empty
+    append_ip_dport pkey      # append TCP dest port to pkey register
+    lookup open_tcp_ports p1  # lookup in hash table
+    jmp reject                # no match: reject packet
+
+  http_inbound:               # test whether contents of pl5 looks like an
+                              #   HTTP "GET" request.  If so, store URI in p2
+                              #   and rest of payload in p1
+    test_http_request pl5 "GET " p2 p1
+    jmp_if_not accept         # if not, then accept the packet
+    # URI is now in p2
+    hash p2 0 0 r1            # compute hash of the URI
+    init_key_p pkey           # reset pkey to empty
+    append_r32 r1 pkey        # place the hash in the pkey register
+    lookup bad_URIs p1        # lookup the hashed URI in a table
+    jmp accept
+
+  tcp4_reset:
+    tcp4_reset
+    jmp accept
+
+end_code
+
+
+# mapping_insert adds an entry to a mapping.  The last argument is the
+# label to jump to when the entry matches.
+mapping_insert pdm_in "everything" reject
+mapping_insert pdm_in "non_ip" accept
+mapping_insert pdm_in "ip4_icmp" accept
+mapping_insert pdm_in "ip4_udp" accept
+mapping_insert pdm_in "ip4_tcp" accept
+
+mapping_insert pdm_out "everything" reject
+mapping_insert pdm_out "non_ip" accept
+mapping_insert pdm_out "ip4_icmp" accept
+mapping_insert pdm_out "ip4_udp" accept
+mapping_insert pdm_out "ip4_tcp" accept
