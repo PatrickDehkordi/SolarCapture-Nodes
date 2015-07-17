@@ -1,0 +1,215 @@
+#!/bin/bash
+######################################################################
+
+me=$(basename "$0")
+bin=$(cd $(dirname "$0") && /bin/pwd)
+err  () { echo >&2 "$*";    }
+log  () { err "$me: $*";     }
+fail () { log "$*"; exit 1; }
+try  () { "$@" || fail "ERROR: '$*'"; }
+trylog() { log "$*"; try "$@"; }
+
+
+start_kernel_bridge() {
+    local host="$1"
+    local bridge="$2"
+    shift 2
+    local interfaces="$*"
+    cat <<-EOF | ssh -T "root@$host"
+	ifconfig $bridge down &>/dev/null
+	brctl delbr $bridge &>/dev/null
+	brctl addbr $bridge
+	for intf in $interfaces; do
+	  ifconfig \$intf 0
+	  brctl addif $bridge \$intf
+	done
+	ifconfig $bridge up
+	EOF
+}
+
+
+cmd_setup() {
+    # Setup bridges and interfaces.  Data path is:
+    #   outside g4 <-> h4 <fwd> h6 <-> g6 <firewall> g7 <-> h7 inside
+
+    cat <<-EOF | ssh -T root@dellr720g
+	echo 1024 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+	for intf in eth4 eth5 eth6 eth7; do ifconfig \$intf 0; done
+	ifconfig eth4 \$(hostname -s)-l/21
+	EOF
+    start_kernel_bridge dellr720g br1 eth6 eth7
+
+    cat <<-EOF | ssh -T root@dellr720h
+	echo 1024 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+	for intf in eth4 eth5 eth6 eth7; do ifconfig \$intf 0; done
+	ifconfig eth7 \$(hostname -s)-l/21
+	pkill -x forward.py
+	echo 0 >/proc/sys/net/ipv4/tcp_syncookies
+	arp -s 172.16.133.94 00:0F:53:20:8C:F0
+	ip route add 192.168.0.0/16 via 172.16.133.94 dev eth7
+	~djr/ci/latest/scripts/sfcirqaffinity eth7 4
+	ethtool -C eth7 adaptive-rx off
+	EOF
+    start_kernel_bridge dellr720h br1 eth4 eth6
+    ssh -f root@dellr720h \
+        taskset -c 11 "$SC_TREE/src/test/forward.py" eth4:eth6
+    ssh -f root@dellr720h \
+        taskset -c 12 "$SC_TREE/src/test/forward.py" eth6:eth4
+    ssh -f root@dellr720h \
+        taskset -c 4 ~djr/etc/ci/bin/mynginx -c "$bin/nginx.conf"
+}
+
+
+cmd_cleanup() {
+    cat <<-EOF | ssh -T root@dellr720g
+	pkill -x forward.py
+	pkill -x firewall.py
+	ifconfig br1 down
+	brctl delbr br1
+	for intf in eth4 eth5 eth6 eth7; do ifconfig \$intf 0; done
+	EOF
+    cat <<-EOF | ssh -T root@dellr720h
+	pkill -x nginx
+	pkill -x forward.py
+	pkill -x firewall.py
+	ifconfig br1 down
+	brctl delbr br1
+	for intf in eth4 eth5 eth6 eth7; do ifconfig \$intf 0; done
+	EOF
+}
+
+
+cmd_start_firewall() {
+    ssh root@dellr720g "pkill -x forward.py; pkill -x firewall.py"
+    sleep 1
+    if [ "$1" = -d ]; then
+        debug=$SC_TREE/src/solar_debug
+    else
+        debug=
+    fi
+    cmd="cd '$bin' && PYTHONPATH=$SC_TREE/src/python"
+    cmd="$cmd SC_NODE_PATH=$SSFE_TREE/solar_capture"
+    cmd="$cmd taskset -c 2,4,6,8"
+    cmd="$cmd $debug ./firewall.py eth6 eth7 ./firewall.ssfe"
+    ssh -f root@dellr720g "$cmd"
+}
+
+
+cmd_stop_firewall() {
+    ssh root@dellr720g "pkill -x firewall.py"
+}
+
+
+cmd_status() {
+    echo dellr720g
+    cat <<-EOF | ssh -T root@dellr720g 2>&1 | sed 's/^/  /'
+	brctl show br1
+	pgrep -x forward.py  | xargs echo | sed 's/^/forward.py:  /'
+	pgrep -x firewall.py | xargs echo | sed 's/^/firewall.py: /'
+	pgrep -x nginx       | xargs echo | sed 's/^/nginx:       /'
+	EOF
+    echo dellr720h
+    cat <<-EOF | ssh -T root@dellr720h 2>&1 | sed 's/^/  /'
+	brctl show br1
+	pgrep -x forward.py  | xargs echo | sed 's/^/forward.py:  /'
+	pgrep -x firewall.py | xargs echo | sed 's/^/firewall.py: /'
+	pgrep -x nginx       | xargs echo | sed 's/^/nginx:       /'
+	EOF
+}
+
+
+cmd_accept() {
+    cat <<-EOF | ssh root@dellr720g "cat >>/tmp/firewall_cfg"
+	mapping_insert pdm_in "ip4_tcp" accept
+	mapping_insert pdm_out "ip4_tcp" accept
+	EOF
+}
+
+
+cmd_enable_sp() {
+    cat <<-EOF | ssh root@dellr720g "cat >>/tmp/firewall_cfg"
+	mapping_insert pdm_in "ip4_tcp" syn_proxy
+	mapping_insert pdm_out "ip4_tcp" syn_proxy
+	EOF
+}
+
+
+cmd_enable_filter() {
+    cat <<-EOF | ssh root@dellr720g "cat >>/tmp/firewall_cfg"
+	mapping_insert pdm_in "ip4_tcp"  tcp_inbound
+	mapping_insert pdm_in "ip4_icmp" ip_inbound
+	mapping_insert pdm_in "ip4_udp"  ip_inbound
+	mapping_insert pdm_out "ip4_tcp" accept
+	EOF
+}
+
+
+cmd_open_http() {
+    cat <<-EOF | ssh root@dellr720g "cat >>/tmp/firewall_cfg"
+	mapping_insert open_tcp_ports 80 http_inbound
+	EOF
+}
+
+
+cmd_add_bad_uri() {
+    [ $# = 1 ] || fail "add_bad_uri: expected URI"
+    cat <<-EOF | ssh root@dellr720g "cat >>/tmp/firewall_cfg"
+	mapping_insert bad_URIs hash("$1") tcp4_reset
+	EOF
+}
+
+
+cmd_del_bad_uri() {
+    [ $# = 1 ] || fail "del_bad_uri: expected URI"
+    cat <<-EOF | ssh root@dellr720g "cat >>/tmp/firewall_cfg"
+	mapping_remove bad_URIs hash("$1")
+	EOF
+}
+
+
+cmd_add_bad_ip() {
+    [ $# = 1 ] || fail "add_bad_ip: expected URI"
+    cat <<-EOF | ssh root@dellr720g "cat >>/tmp/firewall_cfg"
+	mapping_insert bad_IPs $1 reject
+	EOF
+}
+
+
+cmd_del_bad_ip() {
+    [ $# = 1 ] || fail "add_bad_ip: expected URI"
+    cat <<-EOF | ssh root@dellr720g "cat >>/tmp/firewall_cfg"
+	mapping_remove bad_IPs $1
+	EOF
+}
+
+
+cmd_plot() {
+    ssh root@dellr720g $SC_TREE/src/solar_capture_monitor custom_lines \
+        Node.tx_syn.pps Node.tx_msg.pps Node.rx_msg.pps   Node.rx_msg_psh.pps |
+        liveplotter -i60 --ymin 0 --ymax 35000 /dev/stdin now 0 2
+}
+
+
+cmd_plot_good() {
+    ssh root@dellr720g $SC_TREE/src/solar_capture_monitor custom_lines \
+        Node.tx_syn.pps Node.tx_msg.pps Node.rx_msg.pps   Node.rx_msg_psh.pps |
+        liveplotter -i60 --ymin 0 --ymax 35000 /dev/stdin now 1 5
+}
+
+
+cmd_plot_bad() {
+    ssh root@dellr720g $SC_TREE/src/solar_capture_monitor custom_lines \
+        Node.tx_syn.pps Node.tx_msg.pps Node.rx_msg.pps   Node.rx_msg_psh.pps |
+        liveplotter -i60 --ymin 0 --ymax 35000 /dev/stdin now 0 4
+}
+
+
+######################################################################
+# main()
+
+SC_TREE=/home/djr/ci/2cap
+SSFE_TREE=/home/djr/ci/ofe
+
+cmd="$1"
+shift
+"cmd_${cmd}" "$@"
