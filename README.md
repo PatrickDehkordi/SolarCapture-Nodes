@@ -36,6 +36,8 @@ Introduction
    custom features.
 
  - C bindings for embedding SolarCapture into applications.
+ 
+ https://rawgit.com/PatrickDehkordi/SolarCapture-Nodes/master/c_api/index.html
 
 
 Dependencies
@@ -200,4 +202,4 @@ Notes
    * The size of the internal packet buffer pool.
    * Spreading of load using receive-side scaling and application clustering.
 
-https://rawgit.com/PatrickDehkordi/SolarCapture-Nodes/master/c_api/index.html
+
