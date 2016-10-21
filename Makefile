@@ -1,4 +1,4 @@
-#sample SolarCapture node makefile 
+#Sample SolarCapture node makefile for reflect
 SC_VER_MAJ ?= 1
 
 CFLAGS	:= -Wall -g -O2 -fPIC
