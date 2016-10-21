@@ -37,26 +37,22 @@ Using
  directory on the node path (SC_NODE_PATH), then SolarCapture will be able
  to find it:
 
-   # in python
-   node = thread.new_node('my_node')
+# in python
+ node = thread.new_node('my_node')
 
-   /* in C */
-   sc_node_alloc_named(&node, attr, thread, "my_node", NULL, args, n_args);
+/* in C */
+ sc_node_alloc_named(&node, attr, thread, "my_node", NULL, args, n_args);
 
  Otherwise the name of the library or full path to the library must be given:
 
-   # in python
-   node = thread.new_node('my_node', library='my_lib')
-   node = thread.new_node('my_node', library='/path/to/my_lib.so')
+# in python
+ node = thread.new_node('my_node', library='my_lib')
+ node = thread.new_node('my_node', library='/path/to/my_lib.so')
 
-   /* in C */
-   sc_node_alloc_named(&node, attr, thread, "my_node",
-                       "my_lib", args, n_args);
-   sc_node_alloc_named(&node, attr, thread, "my_node",
-                       "/path/to/my_lib.so", args, n_args);
+/* in C */
+ sc_node_alloc_named(&node, attr, thread, "my_node", "my_lib", args, n_args);
+ sc_node_alloc_named(&node, attr, thread, "my_node", "/path/to/my_lib.so", args, n_args);
 
  The second way to use a custom node is to link the node implementation
- directly into your C application, and pass a pointer to the factory to
- sc_node_alloc():
-
-   sc_node_alloc(&node, attr, thread, &my_node_sc_node_factory, args, n_args);
+ directly into your C application, and pass a pointer to the factory to sc_node_alloc():
+  sc_node_alloc(&node, attr, thread, &my_node_sc_node_factory, args, n_args);
