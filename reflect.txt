@@ -1,4 +1,3 @@
-
 Introduction
 ============
 
@@ -55,4 +54,5 @@ Using
 
  The second way to use a custom node is to link the node implementation
  directly into your C application, and pass a pointer to the factory to sc_node_alloc():
-  sc_node_alloc(&node, attr, thread, &my_node_sc_node_factory, args, n_args);
+ 
+ sc_node_alloc(&node, attr, thread, &my_node_sc_node_factory, args, n_args);
