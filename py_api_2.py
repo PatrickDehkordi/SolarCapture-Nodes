@@ -117,8 +117,12 @@ def main(args):
     # The 'sc_writer' node writes packets to disk in pcap format.  The
     # 'snap' argument indicates the maximum number of bytes of each packet
     # that should be saved in the capture file.
+    
+    # The 'sc_printer' node prints packets to the screen. 
+    # The 'snap' argument indicates the maximum number of bytes of each packt to print
+    
     writer_args = dict(filename=filename, snap=60)
-    writer = writer_thread.new_node('sc_writer', args=writer_args)
+    writer = writer_thread.new_node('sc_printer', args=writer_args)
 
     # Connect the VI to the writer node.
     sc.connect(vi, writer)
